@@ -1,0 +1,55 @@
+{
+  "servers": {
+    "next-devtools": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "next-devtools-mcp@latest"]
+    },
+    "storybook": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@storybook/addon-mcp@latest"]
+    },
+    "tw-maker": {
+      "type": "stdio",
+      "command": "bun",
+      "args": ["run", "mcp/index.ts"]
+    },
+    "figma": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["node_modules/.bin/figma-developer-mcp"],
+      "env": { "FIGMA_API_KEY": "${input:figma-api-key}" },
+      "sandboxEnabled": true,
+      "sandbox": {
+        "network": { "allowedDomains": ["api.figma.com"] }
+      }
+    },
+    "design-system-extractor": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["node_modules/.bin/mcp-design-system-extractor"],
+      "sandboxEnabled": true,
+      "sandbox": {
+        "network": { "allowedDomains": ["localhost"] }
+      }
+    },
+    "lighthouse": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["node_modules/.bin/lighthouse-mcp-server"],
+      "sandboxEnabled": true,
+      "sandbox": {
+        "filesystem": { "allowWrite": ["${workspaceFolder}"] }
+      }
+    }
+  },
+  "inputs": [
+    {
+      "type": "promptString",
+      "id": "figma-api-key",
+      "description": "Figma Personal Access Token",
+      "password": true
+    }
+  ]
+}

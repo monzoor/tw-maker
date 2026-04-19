@@ -4,12 +4,6 @@
 > They govern architecture, conventions, and how features should be built.
 > For one-time project initialization, use `SETUP.md` instead — do not re-run bootstrap or setup steps unless explicitly instructed.
 
----
-
-## Project Overview
-
-An e-commerce website built with Next.js 16 (App Router). It has a public storefront visible to everyone, authentication pages (login/signup), and a protected account area for order history and settings. The project uses a **design token system** with Tailwind v4 integration, Storybook for component documentation, and an MCP server that helps AI assistants work with the design system.
-
 ## Stack
 
 > The versions below were current when this document was written. `bun create next-app@latest` may install newer versions. Always verify actual installed versions via `cat node_modules/<pkg>/package.json | grep '"version"'` and use `node_modules/next/dist/docs/` as the authoritative reference for the installed version.
@@ -33,6 +27,7 @@ An e-commerce website built with Next.js 16 (App Router). It has a public storef
 > ⚠️ **Never add `<meta>` tags manually in JSX** — always use the `metadata` export or `generateMetadata` function from `layout.tsx` or `page.tsx`. Next.js generates all `<head>` tags automatically.
 > ⚠️ **Never use a bare `<script>` tag** — always use `<Script>` from `'next/script'` with the correct `strategy` prop.
 > ⚠️ **Do not assume — verify.** Before writing code that touches any Next.js API, routing convention, or component behaviour, read the relevant doc in `node_modules/next/dist/docs/`. If you make an assumption, state it explicitly and confirm it against the bundled docs or existing codebase before writing the code.
+> ⚠️ **Cross-verification is mandatory.** Whenever there is any doubt about how a Next.js feature behaves — including APIs, file conventions, caching, rendering modes, or config options — you must read the corresponding guide in `node_modules/next/dist/docs/` before proceeding. Training data and online resources must never override the bundled docs.
 
 ---
 
@@ -46,64 +41,80 @@ Routes are organised with **Next.js Route Groups** (`(folderName)`) so each sect
 | `(auth)`    | `/login`, `/signup`                                 | Centered card, no header/footer | Unauthenticated users only  |
 | `(account)` | `/account`, `/account/orders`, `/account/settings`  | Header + account nav            | Authenticated users only    |
 
-**Key distinction from an admin panel:**
-
 - `(public)` pages are Server Components that render for all visitors. The Header reads the session server-side and conditionally renders a guest nav (Login / Sign up) or an authenticated nav (avatar, account link).
 - `(auth)` pages redirect to `/account` if the user is already logged in.
 - `(account)` pages redirect to `/login` if the user is not logged in. `proxy.ts` handles both redirects.
 - `StoreProvider` wraps the root `layout.tsx` — all route groups (public, auth, account) have access to Redux state. `cartSlice` and `uiSlice` are needed on public pages (Navbar cart icon, mobile menu), so scoping the store to `(account)` only would break those.
 
-### Route file conventions (App Router)
+---
 
-Every route segment may include:
+## Server and Client Components
 
-- `page.tsx` — the page itself (Server Component by default)
-- `layout.tsx` — persistent UI wrapper for that segment and its children
-- `loading.tsx` — Suspense boundary skeleton shown while the page streams
-- `error.tsx` — error boundary for that segment
-- `not-found.tsx` — 404 for that segment
+> Before writing any component, read `node_modules/next/dist/docs/01-app/01-getting-started/05-server-and-client-components.md`.
 
-### Route structure
+All components are **Server Components by default** — no directive is needed. Only add `'use client'` when a component requires client-only features.
 
-```
-src/app/
-├── (public)/
-│   ├── layout.tsx             # Public layout — Header (auth-aware) + Footer
-│   ├── page.tsx               # / (home — hero, featured products)
-│   ├── products/
-│   │   ├── page.tsx           # /products (catalogue with filters)
-│   │   └── [slug]/
-│   │       └── page.tsx       # /products/[slug] (product detail)
-│   ├── cart/
-│   │   └── page.tsx           # /cart
-│   ├── checkout/
-│   │   └── page.tsx           # /checkout
-│   └── about/
-│       └── page.tsx           # /about
-├── (auth)/
-│   ├── layout.tsx             # Auth layout — centered card, no header/footer
-│   ├── login/
-│   │   └── page.tsx           # /login
-│   └── signup/
-│       └── page.tsx           # /signup
-├── (account)/
-│   ├── layout.tsx             # Account layout — auth-gated
-│   ├── loading.tsx            # Account skeleton
-│   └── account/
-│       ├── page.tsx           # /account (profile)
-│       ├── orders/
-│       │   ├── page.tsx       # /account/orders (order history)
-│       │   └── [id]/
-│       │       └── page.tsx   # /account/orders/[id] (order detail)
-│       └── settings/
-│           └── page.tsx       # /account/settings
-├── api/                       # BFF Route Handlers (server-only proxy)
-│   └── [feature]/
-│       └── route.ts
-├── globals.css
-├── tokens.css                 # GENERATED — do not edit manually
-└── layout.tsx                 # Root layout — wraps <StoreProvider>, fonts, metadata
-```
+### Rules
+
+- **Server Component is the default** — never add `'use client'` unless one of the conditions above applies; omitting it reduces the JS bundle
+- **Push `'use client'` as deep as possible** — marking a large layout as a Client Component pulls all its children into the client bundle; extract only the interactive leaf
+- **`'use client'` is a boundary, not a per-file flag** — once a file has the directive, all its imports and child components are part of the client bundle; you do not repeat it for every file in the subtree
+- **Server Components cannot use hooks or context** — pass data as props from the Server Component to a Client Component
+- **Props crossing the Server→Client boundary must be serializable** — no functions, class instances, Promises, Maps, or Sets
+- **Wrap third-party components that lack `'use client'`** — re-export them from a local file that adds the directive
+- **Mark server-only modules with `import 'server-only'`** — add it to `lib/api/client.ts` and all `lib/services/*.ts` files; this causes a build-time error if they are accidentally imported in a Client Component
+
+---
+
+## Error Handling
+
+> Before writing any error UI, read `node_modules/next/dist/docs/01-app/01-getting-started/10-error-handling.md`.
+
+Next.js splits errors into two categories: **expected errors** (failed API calls, validation) and **uncaught exceptions** (bugs, crashes). Each is handled differently.
+
+### Expected errors
+
+- **Server Components** — check the response and return an error UI or call `redirect()`. Do not `throw`.
+- **Route Handlers** — return `NextResponse.json({ error: '...' }, { status: 4xx })` and handle in the client.
+- **Server Functions (mutations)** — model errors as return values (e.g. `{ message: 'Failed' }`), read with `useActionState`. Do not `throw` expected errors.
+
+### Uncaught exceptions — single `error.tsx` at app root
+
+This project uses **one** `error.tsx` at `src/app/error.tsx`. It wraps all route segments below the root layout and serves as the single 500-style fallback for the entire app. Must be a Client Component (`'use client'`).
+
+**Key facts:**
+
+- `error.tsx` does **not** catch errors in the `layout.tsx` at the same level — only `page.tsx` and nested layouts/pages below it
+- `error.digest` contains a hash matching the server-side log entry — use it in error reporting
+- `unstable_retry()` re-fetches and re-renders the segment; prefer it over the legacy `reset()`
+- In production, `error.message` from Server Components is replaced with a generic string
+
+### Root layout crashes — `global-error.tsx`
+
+`global-error.tsx` is **not deprecated** but is rare — it only activates when the root `layout.tsx` itself crashes. It must render its own `<html>` and `<body>` tags and cannot use `metadata`/`generateMetadata`.
+
+### 404 — single `not-found.tsx` at app root + `notFound()`
+
+This project uses **one** `not-found.tsx` at `src/app/not-found.tsx`. Call `notFound()` from `'next/navigation'` anywhere in the segment tree — it bubbles up to the nearest (here, the root) `not-found.tsx`.
+
+### Placement rules for this project
+
+| File               | Where      | Catches                               |
+| ------------------ | ---------- | ------------------------------------- |
+| `error.tsx`        | `src/app/` | All runtime errors across every route |
+| `not-found.tsx`    | `src/app/` | All `notFound()` calls — app-wide 404 |
+| `global-error.tsx` | `src/app/` | Root layout crashes only (rare)       |
+
+### Rules
+
+- `error.tsx` must always be a Client Component — add `'use client'` at the top
+- Always include `unstable_retry` — gives users a way to recover without a full page reload
+- Log `error.digest` to your error reporting service (Sentry, Datadog) — it links to the server-side stack trace
+- Never expose raw `error.message` in production UI for Server Component errors — use a generic message
+- `not-found.tsx` must use `<Link>` from `'next/link'` for navigation — never a bare `<a>`
+- `global-error.tsx` must include `<html>` and `<body>` — it replaces the root layout
+- Do **not** create per-segment `error.tsx` or `not-found.tsx` files — the single root-level files handle everything
+- Before modifying any error file, read `node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/error.md`
 
 ---
 
@@ -113,38 +124,8 @@ src/app/
 
 `proxy.ts` runs server-side before a request reaches any route. For this e-commerce site it handles two auth redirects:
 
-- **`(auth)` guard** — `/login` and `/signup` redirect to `/account` if the user is already logged in (no point showing auth pages to logged-in users)
+- **`(auth)` guard** — `/login` and `/signup` redirect to `/account` if the user is already logged in
 - **`(account)` guard** — all `/account/*` routes redirect to `/login` if the user is not logged in
-
-```ts
-// src/proxy.ts  — inside src/, same level as src/app/
-import { NextResponse } from "next/server";
-import type { NextRequest } from "next/server";
-
-export function proxy(request: NextRequest) {
-  const { pathname } = request.nextUrl;
-
-  // Read session cookie — replace 'session' with your actual cookie name
-  const isLoggedIn = request.cookies.has("session");
-
-  // (account) guard — redirect unauthenticated users to /login
-  if (pathname.startsWith("/account") && !isLoggedIn) {
-    return NextResponse.redirect(new URL("/login", request.url));
-  }
-
-  // (auth) guard — redirect logged-in users away from /login and /signup
-  if ((pathname === "/login" || pathname === "/signup") && isLoggedIn) {
-    return NextResponse.redirect(new URL("/account", request.url));
-  }
-
-  return NextResponse.next();
-}
-
-export const config = {
-  // Run on account and auth routes only — skip static files, api routes, _next
-  matcher: ["/account/:path*", "/login", "/signup"],
-};
-```
 
 **Rules:**
 
@@ -157,160 +138,25 @@ export const config = {
 
 ---
 
-## SEO & Metadata
+## Fonts
 
-> Before writing any metadata, read `node_modules/next/dist/docs/01-app/01-getting-started/14-metadata-and-og-images.md`.
+> Before adding fonts, read `node_modules/next/dist/docs/01-app/01-getting-started/13-fonts.md`.
 
-Next.js generates all `<head>` tags automatically from the `metadata` export or `generateMetadata` function. Never write `<meta>` or `<title>` tags in JSX.
-
-### Title template — set once in root layout, inherited everywhere
-
-```ts
-// src/app/layout.tsx
-export const metadata: Metadata = {
-  title: {
-    template: "%s | ShopName", // individual pages set the %s part
-    default: "ShopName", // fallback when no page sets a title
-  },
-  description: "Your one-stop shop for ...",
-  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL),
-};
-
-// src/app/(public)/products/page.tsx — static
-export const metadata: Metadata = {
-  title: "Products", // renders: "Products | ShopName"
-};
-
-// src/app/(public)/products/[slug]/page.tsx — dynamic
-export async function generateMetadata({ params }: Props): Promise<Metadata> {
-  const product = await getProductBySlug((await params).slug);
-  return {
-    title: product.name, // renders: "Air Max 90 | ShopName"
-    description: product.description,
-    openGraph: {
-      images: [{ url: product.image, width: 1200, height: 630 }],
-    },
-  };
-}
-```
-
-### SEO helpers folder
-
-```
-src/lib/seo/
-├── defaults.ts        # SITE_NAME, SITE_URL, default OG image, Twitter handle
-└── helpers.ts         # buildProductMeta(), buildCategoryMeta(), buildPageMeta()
-```
-
-Helpers return typed `Metadata` objects. Pages call them instead of constructing metadata inline:
-
-```ts
-import { buildProductMeta } from "@/lib/seo/helpers";
-export const generateMetadata = ({ params }) => buildProductMeta(params.slug);
-```
-
-### File-based SEO (place in `src/app/` root)
-
-| File                  | Purpose                                                          |
-| --------------------- | ---------------------------------------------------------------- |
-| `favicon.ico`         | Auto-detected, no code needed                                    |
-| `opengraph-image.tsx` | Default OG image for all pages (static or `ImageResponse`)       |
-| `robots.ts`           | Generates `/robots.txt` at build time                            |
-| `sitemap.ts`          | Generates `/sitemap.xml` — include all product and category URLs |
+Use `next/font` — never load fonts via a `<link>` tag in JSX or from an external CDN. `next/font` self-hosts all fonts, removes external network requests, and eliminates layout shift (zero CLS).
 
 ### Rules
 
-- Never write `<meta>`, `<title>`, or `<link rel="canonical">` in JSX — use the metadata API
-- Always set `metadataBase` in root layout — required for absolute OG image URLs
-- Use `title.template` in root layout — never hardcode the site name in every page title
-- `generateMetadata` runs server-side — fetch product/category data directly from `lib/services/`, using React `cache()` to avoid duplicate fetches with the page
-- Static pages use `export const metadata` — dynamic pages (product detail, category) use `generateMetadata`
-- OG images: static file for most pages, `opengraph-image.tsx` with `ImageResponse` for product detail
-- Read `node_modules/next/dist/docs/01-app/03-api-reference/04-functions/generate-metadata.md` for the full `Metadata` field reference
+- Use `next/font/google` for Google Fonts and `next/font/local` for self-hosted files — never `<link rel="stylesheet">` pointing to an external CDN
+- Initialize the font module at the top level of `src/app/layout.tsx` (outside the component function) and apply the returned `className` to `<html>` for app-wide coverage
+- Always set `lang="en"` (or the appropriate locale) on the `<html>` element in the root layout — Next.js does not add it automatically; it is required for accessibility (WCAG 3.1.1) and is an SEO signal
+- Specify `subsets` to include only the character sets the design system uses — keeps font payloads small
+- For variable fonts use a `weight` range; for non-variable fonts list only the specific weights used in `tokens.json`
+- Do not initialize the same font in multiple files — define it once in root layout; expose it as a CSS variable if components need to reference it
+- Read `node_modules/next/dist/docs/01-app/03-api-reference/02-components/font.md` for the full options reference
 
----
-
-## 3rd-Party Scripts (GTM & Trackers)
-
-> Before adding any script, read `node_modules/next/dist/docs/01-app/02-guides/scripts.md`.
-
-Use `<Script>` from `'next/script'` — never a bare `<script>` tag. GTM and all trackers go in root `layout.tsx` so they fire on every page.
-
-### Strategy reference
-
-| Strategy            | When to use                                                          |
-| ------------------- | -------------------------------------------------------------------- |
-| `beforeInteractive` | Consent management, critical polyfills — loads before hydration      |
-| `afterInteractive`  | GTM, analytics — loads early, after some hydration (default)         |
-| `lazyOnload`        | Chat widgets, non-critical trackers — loads during browser idle time |
-| `worker`            | Experimental — offloads to web worker via Partytown                  |
-
-### Analytics folder
-
-```
-src/lib/analytics/
-├── GTMScript.tsx      # 'use client' — <Script> wrapper for GTM snippet
-├── GTMNoScript.tsx    # <noscript> iframe fallback — placed after <body> in layout
-└── index.ts           # re-exports all tracker components
-```
-
-### Usage in root layout
-
-```tsx
-// src/app/layout.tsx
-import { GTMScript, GTMNoScript } from "@/lib/analytics";
-
-export default function RootLayout({ children }) {
-  return (
-    <html lang="en">
-      <body>
-        <GTMNoScript /> {/* must be first inside <body> */}
-        {children}
-      </body>
-      <GTMScript /> {/* strategy="afterInteractive" — outside <body> is fine */}
-    </html>
-  );
-}
-```
-
-### Rules
-
-- `GTMScript` uses `strategy="afterInteractive"` — never `beforeInteractive` for GTM
-- `GTMNoScript` renders the `<noscript><iframe>` fallback — place it as the first child of `<body>`
-- GTM container ID goes in `.env` as `NEXT_PUBLIC_GTM_ID` — never hardcoded
-- Add other trackers (Meta Pixel, Hotjar, etc.) as separate named components in `lib/analytics/`
-- `onLoad` / `onReady` event handlers require `'use client'` on the component using them
-- Read `node_modules/next/dist/docs/01-app/03-api-reference/02-components/script.md` for full `<Script>` API
+## Data Fetching — BFF
 
 The browser **never** calls external APIs directly. All external calls go through a **BFF (Backend for Frontend)** proxy using Next.js Route Handlers. Secrets (API keys, tokens) stay server-side.
-
-### Flow
-
-```
-Client Component
-  → fetch("/api/[feature]")        # calls our BFF Route Handler
-    → lib/services/*.ts            # typed fetch functions
-      → External API               # real backend, secrets attached server-side
-
-Server Component (RSC)
-  → lib/services/*.ts              # call external API directly (no proxy needed)
-    → External API
-```
-
-### API folder structure
-
-```
-lib/
-├── api/
-│   ├── client.ts              # Base axios instance — sets baseURL, auth headers, interceptors
-│   └── endpoints.ts           # All external API URLs as typed UPPER_CASE constants
-└── services/
-    ├── auth.service.ts        # login(), signup(), refreshToken()
-    ├── product.service.ts     # getProducts(), getProductBySlug()
-    ├── cart.service.ts        # getCart(), addToCart(), removeFromCart()
-    ├── order.service.ts       # placeOrder(), getOrders(), getOrderById()
-    └── user.service.ts        # getUser(), updateUser()
-```
 
 ### Rules
 
@@ -332,8 +178,10 @@ lib/
 - **No global store** — use `makeStore()` (a factory function), not `configureStore()` exported as a singleton. This prevents cross-request state leakage on the server.
 - **RSCs never touch Redux** — Server Components cannot use hooks or context. They fetch data via `lib/services/` and pass it as props.
 - **Redux is for globally shared, mutable client state only** — e.g. auth session, cart contents, UI state (mobile menu open, active modal). Do not put server-fetched data in Redux.
+- **Serializable state only** — never put Promises, class instances, functions, Maps, Sets, or Symbols in state or dispatched actions. This breaks Redux DevTools time-travel and causes silent bugs. RTK's `configureStore` throws a warning in development when non-serializable values are detected.
 - **RTK Query** — use for client-side remote data fetching (polling, optimistic updates). Server-side fetching uses async RSCs with `fetch`.
 - **`StoreProvider`** is a `'use client'` component placed in the root `layout.tsx` — available to all route groups. `cartSlice` (Navbar cart icon) and `uiSlice` (mobile menu) are needed on public and auth pages too.
+- **Dynamic routes that show user-specific data** must opt out of Next.js route caching: add `export const dynamic = 'force-dynamic'` to the page file. After any server mutation (place order, update profile), call `revalidatePath()` or `revalidateTag()` so the cache is invalidated and the next RSC fetch returns fresh data.
 
 ### Folder structure
 
@@ -351,42 +199,13 @@ app/
 └── layout.tsx                 # Root layout — wraps <StoreProvider>
 ```
 
-### `lib/redux/store.ts` pattern
+### `lib/redux/store.ts`
 
-```ts
-import { configureStore } from "@reduxjs/toolkit";
-import authReducer from "./slices/authSlice";
-import cartReducer from "./slices/cartSlice";
-import uiReducer from "./slices/uiSlice";
+`store.ts` exports `makeStore` — a factory function that calls `configureStore()` with `authReducer`, `cartReducer`, and `uiReducer`. Export `AppStore` as the return type of `makeStore`, then infer `RootState` and `AppDispatch` from `AppStore` — never declare them manually.
 
-export const makeStore = () =>
-  configureStore({
-    reducer: { auth: authReducer, cart: cartReducer, ui: uiReducer },
-  });
+### `lib/redux/StoreProvider.tsx`
 
-export type AppStore = ReturnType<typeof makeStore>;
-export type RootState = ReturnType<AppStore["getState"]>;
-export type AppDispatch = AppStore["dispatch"];
-```
-
-### `lib/redux/StoreProvider.tsx` pattern
-
-```tsx
-"use client";
-import { useRef } from "react";
-import { Provider } from "react-redux";
-import { makeStore, AppStore } from "./store";
-
-export default function StoreProvider({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
-  const storeRef = useRef<AppStore | null>(null);
-  if (!storeRef.current) storeRef.current = makeStore();
-  return <Provider store={storeRef.current}>{children}</Provider>;
-}
-```
+`StoreProvider` is a `'use client'` component. It holds the store instance in `useRef` (created once via `makeStore()` on first render) and wraps `children` in the react-redux `<Provider>`. The `useRef` guard prevents a new store being created on every render.
 
 ### What goes in Redux vs where else
 
@@ -398,8 +217,83 @@ export default function StoreProvider({
 | Product catalogue, product detail     | RSC via `lib/services/` — server-fetched, no Redux |
 | Order history                         | RSC via `lib/services/` — server-fetched, no Redux |
 | Client-side remote data with polling  | RTK Query                                          |
-| Form state (checkout, login)          | React Hook Form (local)                            |
 | URL state (filters, pagination)       | `useSearchParams`                                  |
+
+---
+
+### `createAsyncThunk` — async actions with loading states
+
+Use `createAsyncThunk` for any async operation that needs to be tracked in the store with `pending` / `fulfilled` / `rejected` states — e.g. user login, cart sync to server, profile update. Define thunks **in the same slice file** that owns the state they affect.
+
+Every async slice has four state fields: the domain data (e.g. `user`, `token`), `status: 'idle' | 'pending' | 'fulfilled' | 'rejected'`, and `error: string | null`. Always type all three `createAsyncThunk` generics — fulfilled payload, argument, and `{ rejectValue: string }`. Wire `pending`, `fulfilled`, and `rejected` cases in `extraReducers` using the builder API.
+
+**Thunk rules:**
+
+- Define thunks in the same slice file that owns the affected state — never in a separate file
+- Always type the three generics: `<FulfilledPayload, Argument, { rejectValue: string }>`
+- Use `rejectWithValue()` for user-facing error messages — never `throw` raw errors from a thunk
+- The `status` field on each async slice should use the literal union `'idle' | 'pending' | 'fulfilled' | 'rejected'` — never a boolean `isLoading` flag
+- Do not store the serialized `Error` object in state — extract the message string instead
+- Every slice that owns async state **must** expose a `reset` reducer that returns the slice to its initial state — call it before re-triggering a thunk and in cleanup effects
+- Dispatch thunks from domain hooks in `src/hooks/`, never directly from components
+
+---
+
+### Selectors — read state with named `select*` functions
+
+Always read store state via named selector functions co-located in the slice file. Simple field reads are plain functions (`(state: RootState) => state.cart.items`). Use `createSelector` from RTK when the result requires computation or returns a new array/object — this memoises the output and prevents unnecessary re-renders.
+
+**Selector rules:**
+
+- Always prefix selector names with `select` — e.g. `selectCartItems`, `selectIsLoggedIn`
+- Co-locate selectors in the slice file that owns the data
+- Use `createSelector` when the derived value is a non-trivial computation or returns a new array/object (avoids referential equality failures)
+- Never write inline `(state) => state.x.y` lambdas in `useAppSelector` calls — always call a named selector
+- Simple field reads don't need `createSelector` — reserve it for filtered lists, totals, and object compositions
+
+---
+
+### Action naming — events, not setters
+
+Model actions as **events that happened**, not as imperative setter commands. `createSlice` generates action types in the `"domain/eventName"` format — name reducers as past-tense events:
+
+| ✅ Use                | ❌ Avoid           |
+| --------------------- | ------------------ |
+| `cart/itemAdded`      | `cart/setItems`    |
+| `cart/itemRemoved`    | `cart/setQuantity` |
+| `auth/sessionCleared` | `auth/setUser`     |
+| `ui/mobileMenuOpened` | `ui/setMenuOpen`   |
+
+---
+
+## Custom Hooks
+
+All `useState`, `useEffect`, `useSelector`, `useDispatch`, and any other hook calls must live in a dedicated hook file — never directly in a `.tsx` component or page file. Components are pure rendering; hooks own all state and side-effect logic.
+
+### Placement rule
+
+All hooks live in `src/hooks/` — flat, no sub-folders, one file per logical concern. There is no co-location of hook files inside component folders.
+
+### Types
+
+Return types are defined **inline** in the hook file and exported from it. Never create a separate `.types.ts` for hook types — import `UseXxxReturn` directly from the hook file if another file needs the type.
+
+### Naming conventions
+
+| Construct           | Convention                 | Example                            |
+| ------------------- | -------------------------- | ---------------------------------- |
+| Hook file           | `use` + domain, camelCase  | `useCart.ts`, `useNavbar.ts`       |
+| Hook function       | same as file name          | `export function useCart()`        |
+| Return type         | `Use` + domain + `Return`  | `UseCartReturn`, `UseNavbarReturn` |
+| Options/params type | `Use` + domain + `Options` | `UseCartOptions`                   |
+
+### Rules
+
+- Never call `useState`, `useEffect`, `useSelector`, `useDispatch`, `useRef`, `useCallback`, or `useMemo` directly in a `.tsx` file — wrap them in a hook in `src/hooks/`
+- Every hook file starts with `'use client'` — hooks are always client-side
+- `lib/redux/hooks.ts` is **exempt** — it holds only the three typed RTK wrappers (`useAppDispatch`, `useAppSelector`, `useAppStore`) and is not a domain hook
+- Domain hooks (`useCart`, `useAuth`, etc.) call `useAppDispatch`/`useAppSelector` from `lib/redux/hooks` — never the raw RTK hooks
+- Hook return types are inline in the hook file — move to `lib/types/` only if another file imports `UseXxxReturn` as a standalone prop type
 
 ---
 
@@ -407,13 +301,13 @@ export default function StoreProvider({
 
 All components follow **Atomic Design** methodology. Every new component must be placed at the correct level — never skip levels or mix concerns.
 
-| Level         | Folder                  | Description                                                                                         | Examples                                                                                     |
-| ------------- | ----------------------- | --------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| **Atoms**     | `components/atoms/`     | Smallest indivisible UI primitives. No dependencies on other components. Pure token-driven styling. | Button, Badge, Input, Label, Icon, Avatar, Spinner, PriceTag, Rating                         |
-| **Molecules** | `components/molecules/` | Combinations of atoms that form a simple, reusable unit with a single responsibility.               | FormField (Label + Input), SearchBar (Input + Button), CartItem (Image + PriceTag)           |
-| **Organisms** | `components/organisms/` | Complex UI sections composed of molecules and/or atoms. Can hold local state.                       | Navbar (Logo + Nav + Cart icon), ProductCard (Image + Badge + PriceTag + Button), CartDrawer |
-| **Templates** | `components/templates/` | Page-level layout skeletons — define structure with slots/children, no real data.                   | StorefrontLayout, AuthLayout, AccountLayout, CheckoutLayout                                  |
-| **Pages**     | `app/**/page.tsx`       | Next.js App Router route files. Fill templates with real data. Do not contain UI logic.             | `app/(public)/products/page.tsx`, `app/(account)/account/orders/page.tsx`                    |
+| Level         | Folder                  | Description                                                                                                                                             | Examples                                                                                     |
+| ------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| **Atoms**     | `components/atoms/`     | Smallest indivisible UI primitives. No dependencies on other components. Pure token-driven styling.                                                     | Button, Badge, Input, Label, Icon, Avatar, Spinner, PriceTag, Rating                         |
+| **Molecules** | `components/molecules/` | Combinations of atoms that form a simple, reusable unit with a single responsibility.                                                                   | FormField (Label + Input), SearchBar (Input + Button), CartItem (Image + PriceTag)           |
+| **Organisms** | `components/organisms/` | Complex UI sections composed of molecules and/or atoms. All state and effect logic is delegated to a hook in `src/hooks/` — never inline in the `.tsx`. | Navbar (Logo + Nav + Cart icon), ProductCard (Image + Badge + PriceTag + Button), CartDrawer |
+| **Templates** | `components/templates/` | Page-level layout skeletons — define structure with slots/children, no real data.                                                                       | StorefrontLayout, AuthLayout, AccountLayout, CheckoutLayout                                  |
+| **Pages**     | `app/**/page.tsx`       | Next.js App Router route files. Fill templates with real data. Do not contain UI logic.                                                                 | `app/(public)/products/page.tsx`, `app/(account)/account/orders/page.tsx`                    |
 
 ### Rules
 
@@ -427,6 +321,8 @@ All components follow **Atomic Design** methodology. Every new component must be
 - **Always use `<Image>` from `'next/image'` for images — never `<img>`.**
 - **Before writing any component that uses navigation, images, fonts, or metadata: read the relevant guide in `node_modules/next/dist/docs/` first.**
 
+> The full component list with file paths is in the **Directory Structure** section below. Use that as the authoritative inventory — check it before creating new components to avoid duplicates.
+
 ---
 
 ## MCP Servers — Reference
@@ -437,7 +333,7 @@ All six servers are configured in `.vscode/mcp.json`. VS Code is the only client
 | ------------------------- | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `next-devtools`           | official (npx)                      | `get_errors`, `get_logs`, `get_routes`, `get_page_metadata`, `get_project_metadata`, `get_server_action_by_id`                                                                                                   |
 | `storybook`               | official (npx)                      | `write_story`, `get_stories`                                                                                                                                                                                     |
-| `tw-maker`                | custom (`bun run mcp/index.ts`)     | `list_components`, `read_component`, `write_story`, `get_design_tokens`                                                                                                                                          |
+| `tw-maker`                | custom (`bun run src/mcp/index.ts`) | `list_components`, `read_component`, `write_story`, `get_design_tokens`                                                                                                                                          |
 | `figma`                   | community (node_modules, sandboxed) | reads Figma file data, component specs, design tokens, styles                                                                                                                                                    |
 | `design-system-extractor` | community (node_modules, sandboxed) | extracts component HTML, computed styles, props, dependencies, theme tokens from live Storybook                                                                                                                  |
 | `lighthouse`              | community (node_modules, sandboxed) | `run_audit`, `get_performance_score`, `get_core_web_vitals`, `get_accessibility_score`, `get_seo_analysis`, `get_security_audit`, `find_unused_javascript`, `compare_mobile_desktop`, `check_performance_budget` |
@@ -467,68 +363,27 @@ All six servers are configured in `.vscode/mcp.json`. VS Code is the only client
 - `isolatedModules: true` — required for SWC/Turbopack transpilation
 - `paths: { "@/*": ["./src/*"] }` — use `@/` for all absolute imports from `src/`
 
-### Enable typed routes (add to `next.config.ts`)
+### Enable typed routes
 
-```ts
-import type { NextConfig } from "next";
-const nextConfig: NextConfig = {
-  typedRoutes: true, // Next.js validates all href/push/replace strings at compile time
-};
-export default nextConfig;
-```
-
-### IDE setup (required once per machine)
-
-In VS Code: `Cmd+Shift+P` → "TypeScript: Select TypeScript Version" → **Use Workspace Version**
-This activates the Next.js TypeScript plugin which warns on invalid segment config options, misplaced `'use client'`, and hooks-in-server-components errors.
+Add `typedRoutes: true` to `next.config.ts` — Next.js validates all `href`/`push`/`replace` strings at compile time.
 
 ### Type placement strategy
 
 **Default: inline.** Types live in the file that owns them. Extract to `lib/types/` only when a type is shared across multiple files.
 
-| Situation                                 | Where the type lives                            |
-| ----------------------------------------- | ----------------------------------------------- |
-| Simple component props (≤ 10 lines)       | Inline in `Button.tsx`                          |
-| Complex component with many prop variants | `Button/Button.types.ts` next to `Button.tsx`   |
-| Domain types shared across lib/           | `lib/types/auth.types.ts`                       |
-| API DTOs shared across services/routes    | `lib/types/auth.api.types.ts`                   |
-| Slice state type                          | Inline in `authSlice.ts` — private to the slice |
-| Env var declarations                      | `global.d.ts` at project root — ambient only    |
-
-### Shared types structure
-
-```
-lib/types/
-├── auth.types.ts      # User, Session, Role, AuthState
-├── auth.api.types.ts  # LoginRequest, LoginResponse, UserResponse, ApiError
-└── cart.types.ts      # CartItem, CartState
-```
-
-### Importing shared types
-
-```ts
-// components/organisms/Navbar/Navbar.tsx
-import type { User } from "@/lib/types/auth.types";
-
-// app/api/auth/route.ts
-import type { LoginRequest, LoginResponse } from "@/lib/types/auth.api.types";
-
-// lib/services/auth.service.ts
-import type { LoginRequest, LoginResponse } from "@/lib/types/auth.api.types";
-```
-
-`lib/types/` is the single source of truth for all shared domain types.
+| Situation                                 | Where the type lives                                                |
+| ----------------------------------------- | ------------------------------------------------------------------- |
+| Simple component props (≤ 10 lines)       | Inline in `Button.tsx`                                              |
+| Complex component with many prop variants | `Button/Button.types.ts` next to `Button.tsx`                       |
+| Domain types shared across lib/           | `lib/types/auth.types.ts`                                           |
+| API DTOs shared across services/routes    | `lib/types/auth.api.types.ts`                                       |
+| Slice state type                          | Inline in `authSlice.ts` — private to the slice                     |
+| Hook return type                          | Inline in `useCart.ts` as `UseCartReturn` — exported from hook file |
+| Env var declarations                      | `global.d.ts` at project root — ambient only                        |
 
 ### `RootState` and `AppDispatch` — inferred, never declared manually
 
-```ts
-// lib/redux/store.ts
-export const makeStore = () =>
-  configureStore({ reducer: { auth: authReducer, ui: uiReducer } });
-export type AppStore = ReturnType<typeof makeStore>;
-export type RootState = ReturnType<AppStore["getState"]>; // inferred
-export type AppDispatch = AppStore["dispatch"]; // inferred
-```
+Infer both types from the return type of `makeStore` (see `lib/redux/store.ts` pattern in the Redux section) — never write them manually.
 
 > Never modify `next-env.d.ts` — it is auto-generated and will be overwritten. Put custom ambient types in `global.d.ts` at the project root and add it to `tsconfig.json` `include`:
 
@@ -546,39 +401,6 @@ export type AppDispatch = AppStore["dispatch"]; // inferred
 | Enums                          | Avoid — use `as const` objects instead                  | `const Role = { Admin: 'admin' } as const` |
 | Props                          | Always suffix with `Props`                              | `NavbarProps`, `FormFieldProps`            |
 
-### Patterns per layer
-
-**Simple component props** — inline in the component file, nothing else imports them.
-
-**Shared domain types** — put in `lib/types/` when used by more than one file:
-
-- `lib/types/auth.types.ts` — domain types: `Role`, `User`, `Session`, `AuthState`
-- `lib/types/auth.api.types.ts` — DTOs: `LoginRequest`, `LoginResponse`, `UserResponse`, `ApiError`
-- `lib/types/cart.types.ts` — `CartItem`, `CartState`
-
-**Next.js route files** — use built-in helpers, not custom types:
-
-- `PageProps` and `LayoutProps` from `'next'` — do not write your own
-- RSC `async` components are typed automatically by TypeScript 5+ — no `FC` wrapper needed
-
-**API service and Route Handler** — both import from `lib/types/`:
-
-- Service: `import type { LoginRequest, LoginResponse } from '@/lib/types/auth.api.types'`
-- Route Handler: `import type { LoginRequest, LoginResponse } from '@/lib/types/auth.api.types'`
-
-**Redux slice** — imports domain types from `lib/types/`, state type inline in slice.
-
-**Environment variables** — ambient declaration in `global.d.ts` at project root:
-
-```ts
-declare namespace NodeJS {
-  interface ProcessEnv {
-    NEXT_PUBLIC_API_URL: string;
-    API_SECRET_KEY: string;
-  }
-}
-```
-
 ### Rules
 
 - **Inline by default** — props and simple types stay in the file that owns them
@@ -593,26 +415,6 @@ declare namespace NodeJS {
 - Keep `next-env.d.ts` in `.gitignore` (auto-generated on `next dev`/`next build`)
 
 ---
-
-## Key Decisions
-
-- **Atomic Design** — strict 5-level hierarchy (atoms → molecules → organisms → templates → pages); each level only imports from levels below it
-- **Route Groups** — `(public)`, `(auth)`, `(account)` give each section its own layout without affecting URLs
-- **Public pages are Server Components** — the Header reads session server-side to render guest vs authenticated nav; no Redux needed on public pages
-- **SEO via metadata API** — `title.template` in root layout, static `metadata` for fixed pages, `generateMetadata` for dynamic pages (products, categories); never `<meta>` in JSX
-- **GTM & trackers in `lib/analytics/`** — `GTMScript` + `GTMNoScript` components, loaded via `<Script strategy="afterInteractive">` in root layout; container ID in `NEXT_PUBLIC_GTM_ID`
-- **Auth redirects via `proxy.ts`** — Next.js 16 renamed Middleware to Proxy; `src/proxy.ts` (inside `src/`) handles `(auth)` redirects (logged-in → `/account`) and `(account)` redirects (guest → `/login`)
-- **BFF proxy** — client never calls external APIs directly; Route Handlers in `app/api/` proxy all external calls so secrets stay server-side
-- **RTK `makeStore` not singleton** — per Next.js App Router requirements; prevents cross-request state contamination
-- **Redux for mutable global state only** — auth session + cart + UI state; server data (products, orders) stays in RSC props or RTK Query
-- **Cart in Redux** — cart state is client-side, mutable, and shared across pages (Navbar icon, cart page, checkout); it belongs in `cartSlice`
-- **Products and orders are server-fetched** — product catalogue and order history are read-only, fetched in RSCs via `lib/services/`, never stored in Redux
-- `tokens.json` over YAML — no extra dependency, simple `JSON.parse/stringify`
-- CSS generator script (build-time) over runtime import — no runtime overhead
-- `tokens.css` is a **generated file** — isolated, optionally `.gitignore`-able
-- **Six MCP servers**: `next-devtools-mcp`, `design-system` (custom), `storybook`, `figma`, `design-system-extractor`, `lighthouse` — all in `.vscode/mcp.json` (single file, VS Code is the only client)
-- **MCP security**: official packages (`next-devtools`, `storybook`) use `npx @latest`; community packages (`figma`, `design-system-extractor`, `lighthouse`) installed as dev deps with pinned versions, run from `node_modules`, sandboxed via `sandboxEnabled: true`
-- MCP is **tools-only, no embedded LLM** — the AI assistant calling the tools supplies intelligence; no API key required
 
 ## Directory Structure (target)
 
@@ -657,8 +459,12 @@ tw-maker/
 │   │   ├── opengraph-image.tsx       # Default OG image (ImageResponse)
 │   │   ├── robots.ts                 # Generates /robots.txt
 │   │   ├── sitemap.ts                # Generates /sitemap.xml
-│   │   ├── globals.css
-│   │   ├── tokens.css                # GENERATED — do not edit manually
+│   │   ├── error.tsx                 # App-wide 500 fallback — must be 'use client'
+│   │   ├── global-error.tsx          # Catches root layout crashes — must include <html>+<body>
+│   │   ├── not-found.tsx             # App-wide 404 — unmatched routes
+│   │   ├── styles/
+│   │   │   ├── globals.css
+│   │   │   └── tokens.css            # GENERATED — do not edit manually
 │   │   └── layout.tsx                # Root layout — wraps <StoreProvider>, fonts, metadata
 │   ├── lib/
 │   │   ├── redux/
@@ -689,43 +495,520 @@ tw-maker/
 │   │       ├── auth.types.ts         # User, Session, Role, AuthState
 │   │       ├── auth.api.types.ts     # LoginRequest/Response, UserResponse, ApiError
 │   │       └── cart.types.ts         # CartItem, CartState
+│   ├── hooks/
+│   │   ├── useAuth.ts                # reads authSlice — user, isLoggedIn, logout
+│   │   ├── useCart.ts                # reads cartSlice — items, totalCount, add, remove
+│   │   ├── useUI.ts                  # reads uiSlice — modal, drawer, toast helpers
+│   │   ├── useNavbar.ts              # Navbar-specific logic
+│   │   └── useProductFilters.ts      # /products filter state, pagination, URL sync
 │   ├── components/
 │   │   ├── atoms/
-│   │   │   ├── Button/
+│   │   │   ├── Button/                   # Primary, secondary, ghost, destructive; sm/md/lg
 │   │   │   │   ├── Button.tsx
 │   │   │   │   └── Button.stories.tsx
-│   │   │   ├── Badge/
+│   │   │   ├── IconButton/               # Icon-only button with aria-label
+│   │   │   │   ├── IconButton.tsx
+│   │   │   │   └── IconButton.stories.tsx
+│   │   │   ├── Link/                     # Styled next/link wrapper
+│   │   │   │   ├── Link.tsx
+│   │   │   │   └── Link.stories.tsx
+│   │   │   ├── Badge/                    # New, Sale, Out of Stock chip
 │   │   │   │   ├── Badge.tsx
 │   │   │   │   └── Badge.stories.tsx
-│   │   │   ├── Input/
+│   │   │   ├── Lozenge/                  # Pending, Shipped, Delivered, Refund
+│   │   │   │   ├── Lozenge.tsx
+│   │   │   │   └── Lozenge.stories.tsx
+│   │   │   ├── Tag/                      # Category / filter pill
+│   │   │   │   ├── Tag.tsx
+│   │   │   │   └── Tag.stories.tsx
+│   │   │   ├── PriceTag/                 # Formatted price, strikethrough variant
+│   │   │   │   ├── PriceTag.tsx
+│   │   │   │   └── PriceTag.stories.tsx
+│   │   │   ├── DiscountBadge/            # Percentage-off callout
+│   │   │   │   ├── DiscountBadge.tsx
+│   │   │   │   └── DiscountBadge.stories.tsx
+│   │   │   ├── ScarcityText/             # "Only 2 left" urgency text
+│   │   │   │   ├── ScarcityText.tsx
+│   │   │   │   └── ScarcityText.stories.tsx
+│   │   │   ├── Input/                    # Text, email, number, search
 │   │   │   │   ├── Input.tsx
 │   │   │   │   └── Input.stories.tsx
-│   │   │   ├── Label/
+│   │   │   ├── Textarea/                 # Multi-line input
+│   │   │   │   ├── Textarea.tsx
+│   │   │   │   └── Textarea.stories.tsx
+│   │   │   ├── Checkbox/                 # With indeterminate state
+│   │   │   │   ├── Checkbox.tsx
+│   │   │   │   └── Checkbox.stories.tsx
+│   │   │   ├── RadioButton/              # Single option selector
+│   │   │   │   ├── RadioButton.tsx
+│   │   │   │   └── RadioButton.stories.tsx
+│   │   │   ├── Select/                   # Native dropdown
+│   │   │   │   ├── Select.tsx
+│   │   │   │   └── Select.stories.tsx
+│   │   │   ├── Toggle/                   # Boolean switch
+│   │   │   │   ├── Toggle.tsx
+│   │   │   │   └── Toggle.stories.tsx
+│   │   │   ├── QuantityInput/            # Number stepper with min/max
+│   │   │   │   ├── QuantityInput.tsx
+│   │   │   │   └── QuantityInput.stories.tsx
+│   │   │   ├── Label/                    # Form field label
 │   │   │   │   ├── Label.tsx
 │   │   │   │   └── Label.stories.tsx
-│   │   │   ├── Icon/
+│   │   │   ├── Heading/                  # h1–h6 with size/weight variants
+│   │   │   │   ├── Heading.tsx
+│   │   │   │   └── Heading.stories.tsx
+│   │   │   ├── Text/                     # Body copy, captions, helper text
+│   │   │   │   ├── Text.tsx
+│   │   │   │   └── Text.stories.tsx
+│   │   │   ├── Icon/                     # SVG icon wrapper
 │   │   │   │   ├── Icon.tsx
 │   │   │   │   └── Icon.stories.tsx
-│   │   │   ├── Avatar/
+│   │   │   ├── StarIcon/                 # Filled / half / empty star unit
+│   │   │   │   ├── StarIcon.tsx
+│   │   │   │   └── StarIcon.stories.tsx
+│   │   │   ├── Avatar/                   # Profile image with fallback initials
 │   │   │   │   ├── Avatar.tsx
 │   │   │   │   └── Avatar.stories.tsx
-│   │   │   └── Spinner/
-│   │   │       ├── Spinner.tsx
-│   │   │       └── Spinner.stories.tsx
+│   │   │   ├── Spinner/                  # Loading indicator
+│   │   │   │   ├── Spinner.tsx
+│   │   │   │   └── Spinner.stories.tsx
+│   │   │   ├── Skeleton/                 # Shimmer placeholder block
+│   │   │   │   ├── Skeleton.tsx
+│   │   │   │   └── Skeleton.stories.tsx
+│   │   │   ├── ProgressBar/              # Checkout step / upload / free-shipping progress
+│   │   │   │   ├── ProgressBar.tsx
+│   │   │   │   └── ProgressBar.stories.tsx
+│   │   │   ├── Rating/                   # Star display — read-only or interactive
+│   │   │   │   ├── Rating.tsx
+│   │   │   │   └── Rating.stories.tsx
+│   │   │   ├── Dot/                      # Online indicator or unread count marker
+│   │   │   │   ├── Dot.tsx
+│   │   │   │   └── Dot.stories.tsx
+│   │   │   ├── Divider/                  # Horizontal / vertical separator
+│   │   │   │   ├── Divider.tsx
+│   │   │   │   └── Divider.stories.tsx
+│   │   │   ├── Spacer/                   # Fixed or flex gap utility
+│   │   │   │   ├── Spacer.tsx
+│   │   │   │   └── Spacer.stories.tsx
+│   │   │   ├── Overlay/                  # Semi-transparent backdrop for modals/drawers
+│   │   │   │   ├── Overlay.tsx
+│   │   │   │   └── Overlay.stories.tsx
+│   │   │   ├── Logo/                     # Brand mark — SVG or Image with Link
+│   │   │   │   ├── Logo.tsx
+│   │   │   │   └── Logo.stories.tsx
+│   │   │   ├── CountdownTimer/           # Days/hours/minutes/seconds digits
+│   │   │   │   ├── CountdownTimer.tsx
+│   │   │   │   └── CountdownTimer.stories.tsx
+│   │   │   ├── Tooltip/                  # Floating text on hover/focus
+│   │   │   │   ├── Tooltip.tsx
+│   │   │   │   └── Tooltip.stories.tsx
+│   │   │   ├── Flag/                     # Country flag icon for locale/shipping
+│   │   │   │   ├── Flag.tsx
+│   │   │   │   └── Flag.stories.tsx
+│   │   │   ├── Placeholder/              # Empty image fallback box
+│   │   │   │   ├── Placeholder.tsx
+│   │   │   │   └── Placeholder.stories.tsx
+│   │   │   ├── AspectRatioBox/           # Enforces image aspect ratio — prevents CLS
+│   │   │   │   ├── AspectRatioBox.tsx
+│   │   │   │   └── AspectRatioBox.stories.tsx
+│   │   │   ├── VideoPlayButton/          # Overlay play trigger for product videos
+│   │   │   │   ├── VideoPlayButton.tsx
+│   │   │   │   └── VideoPlayButton.stories.tsx
+│   │   │   ├── ImageZoomCursor/          # Magnifier cursor indicator
+│   │   │   │   ├── ImageZoomCursor.tsx
+│   │   │   │   └── ImageZoomCursor.stories.tsx
+│   │   │   ├── VisuallyHidden/           # Screen-reader-only text wrapper
+│   │   │   │   ├── VisuallyHidden.tsx
+│   │   │   │   └── VisuallyHidden.stories.tsx
+│   │   │   ├── SkipLink/                 # "Skip to main content" — WCAG 2.4.1
+│   │   │   │   ├── SkipLink.tsx
+│   │   │   │   └── SkipLink.stories.tsx
+│   │   │   └── LiveRegion/               # aria-live wrapper for dynamic announcements
+│   │   │       ├── LiveRegion.tsx
+│   │   │       └── LiveRegion.stories.tsx
 │   │   ├── molecules/
-│   │   │   ├── FormField/
+│   │   │   ├── PriceDisplay/             # PriceTag + struck PriceTag + DiscountBadge
+│   │   │   │   ├── PriceDisplay.tsx
+│   │   │   │   └── PriceDisplay.stories.tsx
+│   │   │   ├── RatingSummary/            # Rating stars + "4.2 / 5 · 128 reviews"
+│   │   │   │   ├── RatingSummary.tsx
+│   │   │   │   └── RatingSummary.stories.tsx
+│   │   │   ├── ProductBadgeGroup/        # Stack of Sale / New / Low Stock badges
+│   │   │   │   ├── ProductBadgeGroup.tsx
+│   │   │   │   └── ProductBadgeGroup.stories.tsx
+│   │   │   ├── StockIndicator/           # Dot + "In stock" / "Only 3 left"
+│   │   │   │   ├── StockIndicator.tsx
+│   │   │   │   └── StockIndicator.stories.tsx
+│   │   │   ├── DeliveryEstimate/         # Icon + "Arrives by Thu, Apr 24"
+│   │   │   │   ├── DeliveryEstimate.tsx
+│   │   │   │   └── DeliveryEstimate.stories.tsx
+│   │   │   ├── FreeShippingProgress/     # ProgressBar + "Add $12 more for free shipping"
+│   │   │   │   ├── FreeShippingProgress.tsx
+│   │   │   │   └── FreeShippingProgress.stories.tsx
+│   │   │   ├── SplitPaymentBadge/        # "4 payments of $12 with Klarna"
+│   │   │   │   ├── SplitPaymentBadge.tsx
+│   │   │   │   └── SplitPaymentBadge.stories.tsx
+│   │   │   ├── TrustSignalItem/          # Single trust row — Icon + Text
+│   │   │   │   ├── TrustSignalItem.tsx
+│   │   │   │   └── TrustSignalItem.stories.tsx
+│   │   │   ├── SecureCheckoutBadge/      # Lock icon + "Secure Checkout"
+│   │   │   │   ├── SecureCheckoutBadge.tsx
+│   │   │   │   └── SecureCheckoutBadge.stories.tsx
+│   │   │   ├── VerifiedBuyerTag/         # Review attribution badge
+│   │   │   │   ├── VerifiedBuyerTag.tsx
+│   │   │   │   └── VerifiedBuyerTag.stories.tsx
+│   │   │   ├── PressQuote/               # Logo + "As seen in…"
+│   │   │   │   ├── PressQuote.tsx
+│   │   │   │   └── PressQuote.stories.tsx
+│   │   │   ├── AnnouncementBar/          # Single promo strip
+│   │   │   │   ├── AnnouncementBar.tsx
+│   │   │   │   └── AnnouncementBar.stories.tsx
+│   │   │   ├── CountdownUnit/            # CountdownTimer digit + label
+│   │   │   │   ├── CountdownUnit.tsx
+│   │   │   │   └── CountdownUnit.stories.tsx
+│   │   │   ├── FormField/                # Label + Input + error/hint Text
 │   │   │   │   ├── FormField.tsx
 │   │   │   │   └── FormField.stories.tsx
-│   │   │   └── SearchBar/
-│   │   │       ├── SearchBar.tsx
-│   │   │       └── SearchBar.stories.tsx
+│   │   │   ├── SearchBar/                # Input + magnifier IconButton + clear
+│   │   │   │   ├── SearchBar.tsx
+│   │   │   │   └── SearchBar.stories.tsx
+│   │   │   ├── QuantitySelector/         # IconButton(−) + QuantityInput + IconButton(+)
+│   │   │   │   ├── QuantitySelector.tsx
+│   │   │   │   └── QuantitySelector.stories.tsx
+│   │   │   ├── PriceRange/               # Min/max Inputs + apply Button
+│   │   │   │   ├── PriceRange.tsx
+│   │   │   │   └── PriceRange.stories.tsx
+│   │   │   ├── CouponInput/              # Input + "Apply" Button
+│   │   │   │   ├── CouponInput.tsx
+│   │   │   │   └── CouponInput.stories.tsx
+│   │   │   ├── PasswordInput/            # Input + toggle-visibility IconButton
+│   │   │   │   ├── PasswordInput.tsx
+│   │   │   │   └── PasswordInput.stories.tsx
+│   │   │   ├── NewsletterInput/          # Email Input + Subscribe Button
+│   │   │   │   ├── NewsletterInput.tsx
+│   │   │   │   └── NewsletterInput.stories.tsx
+│   │   │   ├── BackInStockForm/          # Input + "Notify me" Button
+│   │   │   │   ├── BackInStockForm.tsx
+│   │   │   │   └── BackInStockForm.stories.tsx
+│   │   │   ├── ColorSwatch/              # Clickable colour circle with selected ring
+│   │   │   │   ├── ColorSwatch.tsx
+│   │   │   │   └── ColorSwatch.stories.tsx
+│   │   │   ├── SwatchGroup/              # Row of ColorSwatches
+│   │   │   │   ├── SwatchGroup.tsx
+│   │   │   │   └── SwatchGroup.stories.tsx
+│   │   │   ├── SizeOption/               # Single size button S/M/L/XL
+│   │   │   │   ├── SizeOption.tsx
+│   │   │   │   └── SizeOption.stories.tsx
+│   │   │   ├── SizeSelector/             # Row of SizeOptions
+│   │   │   │   ├── SizeSelector.tsx
+│   │   │   │   └── SizeSelector.stories.tsx
+│   │   │   ├── SizeGuideLink/            # Icon + Link — opens SizeGuideModal
+│   │   │   │   ├── SizeGuideLink.tsx
+│   │   │   │   └── SizeGuideLink.stories.tsx
+│   │   │   ├── SubscribeSave/            # RadioButton pair + DiscountBadge
+│   │   │   │   ├── SubscribeSave.tsx
+│   │   │   │   └── SubscribeSave.stories.tsx
+│   │   │   ├── BundleOfferItem/          # Checkbox + Image + PriceTag
+│   │   │   │   ├── BundleOfferItem.tsx
+│   │   │   │   └── BundleOfferItem.stories.tsx
+│   │   │   ├── GiftWrapOption/           # Checkbox + Icon + Text
+│   │   │   │   ├── GiftWrapOption.tsx
+│   │   │   │   └── GiftWrapOption.stories.tsx
+│   │   │   ├── CompareCheckbox/          # "Add to compare" Checkbox + Text
+│   │   │   │   ├── CompareCheckbox.tsx
+│   │   │   │   └── CompareCheckbox.stories.tsx
+│   │   │   ├── ImageThumbnail/           # Image tile with optional overlay
+│   │   │   │   ├── ImageThumbnail.tsx
+│   │   │   │   └── ImageThumbnail.stories.tsx
+│   │   │   ├── ProductVideo/             # VideoPlayButton + thumbnail Image
+│   │   │   │   ├── ProductVideo.tsx
+│   │   │   │   └── ProductVideo.stories.tsx
+│   │   │   ├── ARViewerTrigger/          # Icon + "View in your space"
+│   │   │   │   ├── ARViewerTrigger.tsx
+│   │   │   │   └── ARViewerTrigger.stories.tsx
+│   │   │   ├── SearchSuggestionItem/     # Icon/Image + Text for autocomplete row
+│   │   │   │   ├── SearchSuggestionItem.tsx
+│   │   │   │   └── SearchSuggestionItem.stories.tsx
+│   │   │   ├── SearchCategoryHint/       # "in Shoes" grouping label
+│   │   │   │   ├── SearchCategoryHint.tsx
+│   │   │   │   └── SearchCategoryHint.stories.tsx
+│   │   │   ├── RecentSearchItem/         # Clock icon + Text + remove IconButton
+│   │   │   │   ├── RecentSearchItem.tsx
+│   │   │   │   └── RecentSearchItem.stories.tsx
+│   │   │   ├── NoResultsHint/            # Icon + Text + suggested link
+│   │   │   │   ├── NoResultsHint.tsx
+│   │   │   │   └── NoResultsHint.stories.tsx
+│   │   │   ├── CartItemMeta/             # Image + name + variant Text
+│   │   │   │   ├── CartItemMeta.tsx
+│   │   │   │   └── CartItemMeta.stories.tsx
+│   │   │   ├── CartItemPrice/            # QuantitySelector + PriceTag
+│   │   │   │   ├── CartItemPrice.tsx
+│   │   │   │   └── CartItemPrice.stories.tsx
+│   │   │   ├── OrderSummaryLine/         # Label/value row — subtotal, tax, shipping
+│   │   │   │   ├── OrderSummaryLine.tsx
+│   │   │   │   └── OrderSummaryLine.stories.tsx
+│   │   │   ├── ShippingOption/           # RadioButton + label + time + price
+│   │   │   │   ├── ShippingOption.tsx
+│   │   │   │   └── ShippingOption.stories.tsx
+│   │   │   ├── PaymentMethodBadge/       # Visa / PayPal / Klarna icon + label
+│   │   │   │   ├── PaymentMethodBadge.tsx
+│   │   │   │   └── PaymentMethodBadge.stories.tsx
+│   │   │   ├── StepIndicator/            # Numbered Dot + step label
+│   │   │   │   ├── StepIndicator.tsx
+│   │   │   │   └── StepIndicator.stories.tsx
+│   │   │   ├── OrderStatusStep/          # Icon + label + timestamp
+│   │   │   │   ├── OrderStatusStep.tsx
+│   │   │   │   └── OrderStatusStep.stories.tsx
+│   │   │   ├── RefundStatusBadge/        # Lozenge — Requested/Approved/Issued
+│   │   │   │   ├── RefundStatusBadge.tsx
+│   │   │   │   └── RefundStatusBadge.stories.tsx
+│   │   │   ├── NavLink/                  # Icon? + Text with active state
+│   │   │   │   ├── NavLink.tsx
+│   │   │   │   └── NavLink.stories.tsx
+│   │   │   ├── BreadcrumbItem/           # Link + separator Icon
+│   │   │   │   ├── BreadcrumbItem.tsx
+│   │   │   │   └── BreadcrumbItem.stories.tsx
+│   │   │   ├── PaginationItem/           # Page number Button
+│   │   │   │   ├── PaginationItem.tsx
+│   │   │   │   └── PaginationItem.stories.tsx
+│   │   │   ├── SortSelect/               # Label + Select "Sort by: Price ↑"
+│   │   │   │   ├── SortSelect.tsx
+│   │   │   │   └── SortSelect.stories.tsx
+│   │   │   ├── FilterChip/               # Tag + remove IconButton
+│   │   │   │   ├── FilterChip.tsx
+│   │   │   │   └── FilterChip.stories.tsx
+│   │   │   ├── TabItem/                  # Tab trigger Button with active/inactive state
+│   │   │   │   ├── TabItem.tsx
+│   │   │   │   └── TabItem.stories.tsx
+│   │   │   ├── AccordionItem/            # Trigger Button + collapsible panel
+│   │   │   │   ├── AccordionItem.tsx
+│   │   │   │   └── AccordionItem.stories.tsx
+│   │   │   ├── CarouselSlide/            # Single slide wrapper
+│   │   │   │   ├── CarouselSlide.tsx
+│   │   │   │   └── CarouselSlide.stories.tsx
+│   │   │   ├── CarouselDot/              # Carousel position indicator
+│   │   │   │   ├── CarouselDot.tsx
+│   │   │   │   └── CarouselDot.stories.tsx
+│   │   │   ├── CarouselArrow/            # Prev/next slide IconButton
+│   │   │   │   ├── CarouselArrow.tsx
+│   │   │   │   └── CarouselArrow.stories.tsx
+│   │   │   ├── WishlistButton/           # Heart toggle — filled / outline
+│   │   │   │   ├── WishlistButton.tsx
+│   │   │   │   └── WishlistButton.stories.tsx
+│   │   │   ├── ShareButton/              # IconButton + share label
+│   │   │   │   ├── ShareButton.tsx
+│   │   │   │   └── ShareButton.stories.tsx
+│   │   │   ├── NotificationBadge/        # Cart Icon + item count Dot
+│   │   │   │   ├── NotificationBadge.tsx
+│   │   │   │   └── NotificationBadge.stories.tsx
+│   │   │   ├── SocialLink/               # Icon + VisuallyHidden label
+│   │   │   │   ├── SocialLink.tsx
+│   │   │   │   └── SocialLink.stories.tsx
+│   │   │   ├── ReviewCard/               # Avatar + Text + RatingSummary + VerifiedBuyerTag
+│   │   │   │   ├── ReviewCard.tsx
+│   │   │   │   └── ReviewCard.stories.tsx
+│   │   │   ├── CategoryTile/             # Image + Text label
+│   │   │   │   ├── CategoryTile.tsx
+│   │   │   │   └── CategoryTile.stories.tsx
+│   │   │   ├── AddressLine/              # Icon + formatted address Text
+│   │   │   │   ├── AddressLine.tsx
+│   │   │   │   └── AddressLine.stories.tsx
+│   │   │   └── TrustBadge/               # Icon + Heading + Text trust block
+│   │   │       ├── TrustBadge.tsx
+│   │   │       └── TrustBadge.stories.tsx
 │   │   ├── organisms/
-│   │   │   ├── Navbar/
+│   │   │   ├── HeroBanner/               # Full-width image/video + Heading + Button(s)
+│   │   │   │   ├── HeroBanner.tsx
+│   │   │   │   └── HeroBanner.stories.tsx
+│   │   │   ├── PromoBanner/              # AnnouncementBar + optional CountdownUnit
+│   │   │   │   ├── PromoBanner.tsx
+│   │   │   │   └── PromoBanner.stories.tsx
+│   │   │   ├── CategoryBanner/           # Image + CategoryTile overlay
+│   │   │   │   ├── CategoryBanner.tsx
+│   │   │   │   └── CategoryBanner.stories.tsx
+│   │   │   ├── FreeShippingBanner/       # Site-wide FreeShippingProgress
+│   │   │   │   ├── FreeShippingBanner.tsx
+│   │   │   │   └── FreeShippingBanner.stories.tsx
+│   │   │   ├── HeroCarousel/             # Auto-play slides + dots + arrows
+│   │   │   │   ├── HeroCarousel.tsx
+│   │   │   │   └── HeroCarousel.stories.tsx
+│   │   │   ├── ProductCarousel/          # Horizontal scroll of ProductCards + arrows
+│   │   │   │   ├── ProductCarousel.tsx
+│   │   │   │   └── ProductCarousel.stories.tsx
+│   │   │   ├── BannerCarousel/           # Rotating HeroBanners
+│   │   │   │   ├── BannerCarousel.tsx
+│   │   │   │   └── BannerCarousel.stories.tsx
+│   │   │   ├── ThumbnailGallery/         # Main Image + ImageThumbnail strip + zoom
+│   │   │   │   ├── ThumbnailGallery.tsx
+│   │   │   │   └── ThumbnailGallery.stories.tsx
+│   │   │   ├── ProductVideoGallery/      # Mixed image + video ThumbnailGallery
+│   │   │   │   ├── ProductVideoGallery.tsx
+│   │   │   │   └── ProductVideoGallery.stories.tsx
+│   │   │   ├── Accordion/                # Stacked AccordionItems — FAQ, filters
+│   │   │   │   ├── Accordion.tsx
+│   │   │   │   └── Accordion.stories.tsx
+│   │   │   ├── TabGroup/                 # Horizontal or vertical TabItems + panels
+│   │   │   │   ├── TabGroup.tsx
+│   │   │   │   └── TabGroup.stories.tsx
+│   │   │   ├── Drawer/                   # Slide-in panel — cart, filters, mobile nav
+│   │   │   │   ├── Drawer.tsx
+│   │   │   │   └── Drawer.stories.tsx
+│   │   │   ├── Modal/                    # Overlay + dialog — quick view, confirm, zoom
+│   │   │   │   ├── Modal.tsx
+│   │   │   │   └── Modal.stories.tsx
+│   │   │   ├── Navbar/                   # Logo + NavLinks + SearchBar + cart + Avatar
 │   │   │   │   ├── Navbar.tsx
 │   │   │   │   └── Navbar.stories.tsx
-│   │   │   └── ProductCard/
-│   │   │       ├── ProductCard.tsx
-│   │   │       └── ProductCard.stories.tsx
+│   │   │   ├── MegaMenu/                 # Multi-column dropdown from Navbar item
+│   │   │   │   ├── MegaMenu.tsx
+│   │   │   │   └── MegaMenu.stories.tsx
+│   │   │   ├── Breadcrumbs/              # Ordered BreadcrumbItems
+│   │   │   │   ├── Breadcrumbs.tsx
+│   │   │   │   └── Breadcrumbs.stories.tsx
+│   │   │   ├── Pagination/               # Prev/next + PaginationItems
+│   │   │   │   ├── Pagination.tsx
+│   │   │   │   └── Pagination.stories.tsx
+│   │   │   ├── FilterSidebar/            # Stacked Accordions + FilterChips
+│   │   │   │   ├── FilterSidebar.tsx
+│   │   │   │   └── FilterSidebar.stories.tsx
+│   │   │   ├── SortFilterBar/            # SortSelect + FilterChips + result count
+│   │   │   │   ├── SortFilterBar.tsx
+│   │   │   │   └── SortFilterBar.stories.tsx
+│   │   │   ├── Header/                   # Navbar + optional PromoBanner
+│   │   │   │   ├── Header.tsx
+│   │   │   │   └── Header.stories.tsx
+│   │   │   ├── Footer/                   # Logo + SocialLinks + columns + NewsletterInput
+│   │   │   │   ├── Footer.tsx
+│   │   │   │   └── Footer.stories.tsx
+│   │   │   ├── SearchOverlay/            # Full-screen search: bar + recents + suggestions
+│   │   │   │   ├── SearchOverlay.tsx
+│   │   │   │   └── SearchOverlay.stories.tsx
+│   │   │   ├── SearchResultsHeader/      # Query + result count + SortFilterBar
+│   │   │   │   ├── SearchResultsHeader.tsx
+│   │   │   │   └── SearchResultsHeader.stories.tsx
+│   │   │   ├── EmptySearchResults/       # EmptyState + popular categories + SearchBar
+│   │   │   │   ├── EmptySearchResults.tsx
+│   │   │   │   └── EmptySearchResults.stories.tsx
+│   │   │   ├── ProductCard/              # ImageThumbnail + badges + PriceDisplay + Button
+│   │   │   │   ├── ProductCard.tsx
+│   │   │   │   └── ProductCard.stories.tsx
+│   │   │   ├── ProductGrid/              # Responsive grid of ProductCards
+│   │   │   │   ├── ProductGrid.tsx
+│   │   │   │   └── ProductGrid.stories.tsx
+│   │   │   ├── ProductImageGallery/      # ThumbnailGallery with zoom
+│   │   │   │   ├── ProductImageGallery.tsx
+│   │   │   │   └── ProductImageGallery.stories.tsx
+│   │   │   ├── ProductDetails/           # Accordion — description/specs/size guide
+│   │   │   │   ├── ProductDetails.tsx
+│   │   │   │   └── ProductDetails.stories.tsx
+│   │   │   ├── QuickViewModal/           # Modal: gallery + price + size + add-to-cart
+│   │   │   │   ├── QuickViewModal.tsx
+│   │   │   │   └── QuickViewModal.stories.tsx
+│   │   │   ├── StickyAddToCart/          # Fixed bar after scrolling past buy box
+│   │   │   │   ├── StickyAddToCart.tsx
+│   │   │   │   └── StickyAddToCart.stories.tsx
+│   │   │   ├── SizeGuideModal/           # Modal with measurement table + fit tips
+│   │   │   │   ├── SizeGuideModal.tsx
+│   │   │   │   └── SizeGuideModal.stories.tsx
+│   │   │   ├── FrequentlyBoughtTogether/ # BundleOfferItems + combined price + add-all
+│   │   │   │   ├── FrequentlyBoughtTogether.tsx
+│   │   │   │   └── FrequentlyBoughtTogether.stories.tsx
+│   │   │   ├── ARViewerPanel/            # AR viewer canvas + instructions
+│   │   │   │   ├── ARViewerPanel.tsx
+│   │   │   │   └── ARViewerPanel.stories.tsx
+│   │   │   ├── ReviewList/               # RatingSummary + ReviewCards + Pagination
+│   │   │   │   ├── ReviewList.tsx
+│   │   │   │   └── ReviewList.stories.tsx
+│   │   │   ├── RelatedProducts/          # ProductCarousel with heading
+│   │   │   │   ├── RelatedProducts.tsx
+│   │   │   │   └── RelatedProducts.stories.tsx
+│   │   │   ├── RecentlyViewedProducts/   # Horizontal scroll ProductCards
+│   │   │   │   ├── RecentlyViewedProducts.tsx
+│   │   │   │   └── RecentlyViewedProducts.stories.tsx
+│   │   │   ├── CartDrawer/               # Drawer: cart items + totals
+│   │   │   │   ├── CartDrawer.tsx
+│   │   │   │   └── CartDrawer.stories.tsx
+│   │   │   ├── CartSummary/              # Full-page order summary + CouponInput
+│   │   │   │   ├── CartSummary.tsx
+│   │   │   │   └── CartSummary.stories.tsx
+│   │   │   ├── CartCrossSell/            # "You may also need" inside CartDrawer
+│   │   │   │   ├── CartCrossSell.tsx
+│   │   │   │   └── CartCrossSell.stories.tsx
+│   │   │   ├── GuestCheckoutPrompt/      # Guest / sign-in / sign-up choice
+│   │   │   │   ├── GuestCheckoutPrompt.tsx
+│   │   │   │   └── GuestCheckoutPrompt.stories.tsx
+│   │   │   ├── CheckoutStepper/          # StepIndicator row for checkout flow
+│   │   │   │   ├── CheckoutStepper.tsx
+│   │   │   │   └── CheckoutStepper.stories.tsx
+│   │   │   ├── AddressAutocomplete/      # FormField with address suggestions
+│   │   │   │   ├── AddressAutocomplete.tsx
+│   │   │   │   └── AddressAutocomplete.stories.tsx
+│   │   │   ├── OrderSummaryCollapsible/  # Accordion CartSummary for mobile checkout
+│   │   │   │   ├── OrderSummaryCollapsible.tsx
+│   │   │   │   └── OrderSummaryCollapsible.stories.tsx
+│   │   │   ├── PromoCodePanel/           # CouponInput + applied discount line
+│   │   │   │   ├── PromoCodePanel.tsx
+│   │   │   │   └── PromoCodePanel.stories.tsx
+│   │   │   ├── GiftOptionsPanel/         # GiftWrapOption + gift message Textarea
+│   │   │   │   ├── GiftOptionsPanel.tsx
+│   │   │   │   └── GiftOptionsPanel.stories.tsx
+│   │   │   ├── ShippingForm/             # FormFields + ShippingOption list
+│   │   │   │   ├── ShippingForm.tsx
+│   │   │   │   └── ShippingForm.stories.tsx
+│   │   │   ├── PaymentForm/              # FormFields + PaymentMethodBadge selector
+│   │   │   │   ├── PaymentForm.tsx
+│   │   │   │   └── PaymentForm.stories.tsx
+│   │   │   ├── OrderConfirmation/        # Icon + Heading + order summary
+│   │   │   │   ├── OrderConfirmation.tsx
+│   │   │   │   └── OrderConfirmation.stories.tsx
+│   │   │   ├── OrderTracker/             # Timeline of OrderStatusSteps
+│   │   │   │   ├── OrderTracker.tsx
+│   │   │   │   └── OrderTracker.stories.tsx
+│   │   │   ├── OrderRow/                 # Lozenge + order number + date + price + Button
+│   │   │   │   ├── OrderRow.tsx
+│   │   │   │   └── OrderRow.stories.tsx
+│   │   │   ├── OrderTable/               # Table of OrderRows + Pagination
+│   │   │   │   ├── OrderTable.tsx
+│   │   │   │   └── OrderTable.stories.tsx
+│   │   │   ├── ReturnRequestForm/        # FormFields + reason Select + Checkboxes
+│   │   │   │   ├── ReturnRequestForm.tsx
+│   │   │   │   └── ReturnRequestForm.stories.tsx
+│   │   │   ├── ReorderButton/            # One-tap reorder for a past order
+│   │   │   │   ├── ReorderButton.tsx
+│   │   │   │   └── ReorderButton.stories.tsx
+│   │   │   ├── ProfileForm/              # FormFields + Avatar upload + save Button
+│   │   │   │   ├── ProfileForm.tsx
+│   │   │   │   └── ProfileForm.stories.tsx
+│   │   │   ├── AddressCard/              # AddressLine + edit/delete IconButtons
+│   │   │   │   ├── AddressCard.tsx
+│   │   │   │   └── AddressCard.stories.tsx
+│   │   │   ├── ToastStack/               # Queued Toast notifications — fixed position
+│   │   │   │   ├── ToastStack.tsx
+│   │   │   │   └── ToastStack.stories.tsx
+│   │   │   ├── EmptyState/               # Icon + Heading + Text + optional Button
+│   │   │   │   ├── EmptyState.tsx
+│   │   │   │   └── EmptyState.stories.tsx
+│   │   │   ├── SkipNavigation/           # SkipLink as first element in body — WCAG 2.4.1
+│   │   │   │   ├── SkipNavigation.tsx
+│   │   │   │   └── SkipNavigation.stories.tsx
+│   │   │   ├── CookieBanner/             # Text + accept/decline Buttons — fixed bottom
+│   │   │   │   ├── CookieBanner.tsx
+│   │   │   │   └── CookieBanner.stories.tsx
+│   │   │   ├── CookieConsentManager/     # Granular Accordion with category toggles
+│   │   │   │   ├── CookieConsentManager.tsx
+│   │   │   │   └── CookieConsentManager.stories.tsx
+│   │   │   ├── AgeVerificationGate/      # Blocking Modal for restricted pages
+│   │   │   │   ├── AgeVerificationGate.tsx
+│   │   │   │   └── AgeVerificationGate.stories.tsx
+│   │   │   ├── LanguageCurrencySwitcher/ # Select pair for locale in Header/Footer
+│   │   │   │   ├── LanguageCurrencySwitcher.tsx
+│   │   │   │   └── LanguageCurrencySwitcher.stories.tsx
+│   │   │   ├── LiveChatWidget/           # Floating IconButton + chat Drawer
+│   │   │   │   ├── LiveChatWidget.tsx
+│   │   │   │   └── LiveChatWidget.stories.tsx
+│   │   │   └── TooltipPortal/            # Tooltip in portal — escapes overflow:hidden
+│   │   │       ├── TooltipPortal.tsx
+│   │   │       └── TooltipPortal.stories.tsx
 │   │   └── templates/
 │   │       ├── StorefrontLayout/
 │   │       │   ├── StorefrontLayout.tsx
